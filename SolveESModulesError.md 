@@ -1,0 +1,129 @@
+# Solve - `ES Modules may not assign module.exports or exports.*`
+
+The project, built by webpack, loading in browser will throw the error :`ES Modules may not assign module.exports or exports.*`.
+
+## Project Context
+* created by `create-react-app`.
+* use `customize-cra` to override the webpack config.
+* use `babelrc.json` to setup babel in root directory and applied by `useBabelRc()` from `custom-cra`.
+* has a submodule, with its independent `package.json` and `node_modules`.
+  
+## Trouble Shooting
+
+### Set `sourceType:unambiguous` in babelrc
+Through the error info and error stack, it indicates that webpack recognize the `COMMONJS` module as `ES` modules, and try to transform it in submodule project.
+
+So, I set `sourceType:unambiguous` in babelrc, to make babel loader consider the file a "module" if import/export statements are present, or else consider it a "script".
+
+> Setting the correct sourceType can be important because having the wrong type can lead to cases where Babel would insert import statements into files that are meant to be CommonJS files. This can be particularly important in projects where compilation of node_modules dependencies is being performed, because inserting an import statements can cause Webpack and other tooling to see a file as an ES module, breaking what would otherwise be a functional CommonJS file.
+     -- from babel official website
+
+
+Unfortunately,it failed. Seems like that it doesn't work on submodule.
+
+### Use `babel.config.json` instead `babelrc.json`
+
+`babel.config.json` and `babelrc.json` are different.
+
+
+`babel.config.json` is a project-wide configuration.
+  * Like a project global configuration
+
+`babelrc.json` is a file-relative configuration.
+  * Searching will stop once a directory containing a package.json is found, so a relative config only applies within a single package.
+
+  * The "filename" being compiled must be inside of "babelrcRoots" packages, or else searching will be skipped entirely.
+
+So,it seems that the `.babelrc.json` wasn't loaded successfully.
+
+
+I am using `custom-cra` library to override the webpack config, and there is no `method` export by `custom-cra` can use the `babel.config.json`.
+
+Then, I tried to write a `overrid method` by myself.
+Turn on the `loader.options.configFile` can achieve it.
+
+```
+
+const getBabelLoader = (config, isOutsideOfApp) => {
+  let babelLoaderFilter;
+  if (isOutsideOfApp) {
+    babelLoaderFilter = rule =>
+      rule.loader && rule.loader.includes("babel") && rule.exclude;
+  } else {
+    babelLoaderFilter = rule =>
+      rule.loader && rule.loader.includes("babel") && rule.include;
+  }
+
+  let loaders = config.module.rules.find(rule => Array.isArray(rule.oneOf))
+    .oneOf;
+
+  let babelLoader = loaders.find(babelLoaderFilter);
+  if (!babelLoader) {
+    loaders = loaders.reduce((ldrs, rule) => ldrs.concat(rule.use || []), []);
+    babelLoader = loaders.find(babelLoaderFilter);
+  }
+  return babelLoader;
+};
+
+const useBabelConfigFile = () => config => {
+  getBabelLoader(config).options.configFile = true;
+  return config;
+};
+
+module.exports = {
+  useBabelConfigFile
+};
+
+```
+
+Then, use `useBabelConfigFile()` to `override()` in file `./config-overrides.js`
+
+```
+module.exports = override(
+  useBabelConfigFile(),
+);
+
+```
+
+The error has updated...
+
+It throw new error info: `Module not found: Error: You attempted to import /**/node_modules/@babel/runtime/helpers/interopRequireDefault.js which falls outside of the project src/ directory. Relative imports outside of src/ are not supported.
+You can either move it inside src/, or add a symlink to it from project's node_modules/.`
+
+### Resolve `Module not found`
+
+From the error info, it shows that I import modules from outside the `src` directory.
+
+But, actually, I didn't do it at all.
+
+Maybe it throw by submodules transforming.
+
+Anyway, continue to solve the `Module not found`.
+
+use the `removeModuleScopePlugin()` from `customize-cra`.
+```
+const {
+  override,
+  removeModuleScopePlugin,
+} = require("customize-cra");
+
+module.exports = override(
+  removeModuleScopePlugin(),
+  useBabelConfigFile(),
+);
+```
+
+This will remove the CRA plugin that prevents to import modules from outside the `src` directory, useful if you use a different directory.
+
+
+Finally, it works! My project loads successfully again!
+
+
+> *reference:*
+> 
+> *[babel official document](https://babeljs.io/docs/config-files#root-babelconfigjson-file)*
+> 
+> *[create-react-app github](https://github.com/facebook/create-react-app/issues)*
+> 
+> *[customize-cra github](https://github.com/arackaf/customize-cra)*
+
